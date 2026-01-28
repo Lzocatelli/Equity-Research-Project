@@ -53,22 +53,31 @@ st.markdown("""
 # ============================================================
 # FUNÇÕES AUXILIARES
 # ============================================================
-@st.cache_data(ttl=300)  # Cache por 5 minutos
+@st.cache_data(ttl=600)  # Cache por 10 minutos
 def fetch_stock_data(ticker: str, period: str = "1y"):
     """Busca dados da ação com cache"""
-    stock = StockFetcher(ticker)
-    basic = stock.get_basic_info()
-    fundamentals = stock.get_fundamentals()
-    history = stock.get_history(period=period)
-    return basic, fundamentals, history
+    try:
+        stock = StockFetcher(ticker)
+        basic = stock.get_basic_info()
+        fundamentals = stock.get_fundamentals()
+        history = stock.get_history(period=period)
+        return basic, fundamentals, history
+    except Exception as e:
+        if 'rate' in str(e).lower() or 'limit' in str(e).lower():
+            raise Exception(f"Rate limit do Yahoo Finance. Aguarde 1-2 minutos e tente novamente.")
+        raise e
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def fetch_multiple_stocks_data(tickers: list, period: str = "1y"):
-    """Busca dados de múltiplas ações"""
+    """Busca dados de múltiplas ações com delay para evitar rate limit"""
+    import time
     data = {}
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
         try:
+            # Delay entre requisições para evitar rate limit
+            if i > 0:
+                time.sleep(0.5)
             stock = StockFetcher(ticker)
             data[ticker] = {
                 'basic': stock.get_basic_info(),
@@ -76,7 +85,20 @@ def fetch_multiple_stocks_data(tickers: list, period: str = "1y"):
                 'history': stock.get_history(period=period)
             }
         except Exception as e:
-            st.warning(f"Erro ao buscar {ticker}: {e}")
+            if 'rate' in str(e).lower() or 'limit' in str(e).lower():
+                st.warning(f"Rate limit atingido. Aguarde um momento...")
+                time.sleep(5)
+                try:
+                    stock = StockFetcher(ticker)
+                    data[ticker] = {
+                        'basic': stock.get_basic_info(),
+                        'fundamentals': stock.get_fundamentals(),
+                        'history': stock.get_history(period=period)
+                    }
+                except:
+                    st.warning(f"Não foi possível buscar {ticker}")
+            else:
+                st.warning(f"Erro ao buscar {ticker}: {e}")
     return data
 
 
@@ -293,6 +315,12 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Desenvolvido por Zocatelli")
     st.caption("[GitHub](https://github.com/Lzocatelli)")
+    
+    st.markdown("---")
+    if st.button("🔄 Limpar Cache"):
+        st.cache_data.clear()
+        st.success("Cache limpo!")
+    st.caption("Use se receber erro de rate limit")
 
 
 # ============================================================
@@ -444,8 +472,8 @@ elif page == "📊 Análise Individual":
                             "Valor": [
                                 f"{fund['pl']:.2f}" if fund['pl'] else "N/A",
                                 f"{fund['pvp']:.2f}" if fund['pvp'] else "N/A",
-                                "N/A",  # yfinance nem sempre tem
-                                "N/A"
+                                f"{fund['ev_ebitda']:.2f}" if fund.get('ev_ebitda') else "N/A",
+                                f"{fund['psr']:.2f}" if fund.get('psr') else "N/A"
                             ]
                         }
                         st.table(pd.DataFrame(fund_data))
@@ -453,10 +481,12 @@ elif page == "📊 Análise Individual":
                     with col2:
                         st.markdown("### Rentabilidade")
                         rent_data = {
-                            "Indicador": ["ROE", "Margem Líquida", "Dividend Yield", "Payout"],
+                            "Indicador": ["ROE", "ROA", "Margem Líquida", "Margem Bruta", "Dividend Yield", "Payout"],
                             "Valor": [
                                 format_percent(fund['roe']),
+                                format_percent(fund.get('roa')),
                                 format_percent(fund['margem_liquida']),
+                                format_percent(fund.get('margem_bruta')),
                                 format_percent(fund['dividend_yield']),
                                 format_percent(fund['payout_ratio'])
                             ]
@@ -464,16 +494,28 @@ elif page == "📊 Análise Individual":
                         st.table(pd.DataFrame(rent_data))
                     
                     st.markdown("### Dados Financeiros")
-                    fin_data = {
-                        "Item": ["LPA", "VPA", "Receita Total", "Lucro Líquido"],
-                        "Valor": [
-                            f"R$ {fund['lpa']:.2f}" if fund['lpa'] else "N/A",
-                            f"R$ {fund['vpa']:.2f}" if fund['vpa'] else "N/A",
-                            format_number(fund['receita_total'], prefix="R$ "),
-                            format_number(fund['lucro_liquido'], prefix="R$ ")
-                        ]
-                    }
-                    st.table(pd.DataFrame(fin_data))
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fin_data = {
+                            "Item": ["LPA", "VPA", "Receita Total", "Lucro Líquido"],
+                            "Valor": [
+                                f"R$ {fund['lpa']:.2f}" if fund['lpa'] else "N/A",
+                                f"R$ {fund['vpa']:.2f}" if fund['vpa'] else "N/A",
+                                format_number(fund['receita_total'], prefix="R$ "),
+                                format_number(fund['lucro_liquido'], prefix="R$ ")
+                            ]
+                        }
+                        st.table(pd.DataFrame(fin_data))
+                    with col2:
+                        fin_data2 = {
+                            "Item": ["EBITDA", "Enterprise Value", "Dívida/Patrimônio"],
+                            "Valor": [
+                                format_number(fund.get('ebitda'), prefix="R$ "),
+                                format_number(fund.get('enterprise_value'), prefix="R$ "),
+                                f"{fund['divida_patrimonio']:.2f}" if fund.get('divida_patrimonio') else "N/A"
+                            ]
+                        }
+                        st.table(pd.DataFrame(fin_data2))
                 
                 with tab3:
                     col1, col2, col3, col4 = st.columns(4)
