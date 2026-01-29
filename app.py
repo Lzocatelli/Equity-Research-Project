@@ -565,6 +565,9 @@ elif page == "📊 Análise Individual":
                 with tab4:
                     st.markdown("### 💰 Valuation - Preço Justo")
                     
+                    # Busca benchmark do setor para DY normalizado
+                    benchmark = get_sector_benchmark(basic['setor'])
+                    
                     # Calcula DPA (Dividendo por Ação) se tiver DY e preço
                     dpa = 0
                     if fund['dividend_yield'] and basic['preco_atual']:
@@ -613,26 +616,73 @@ elif page == "📊 Análise Individual":
                         uma ação só vale a pena com DY mínimo de 6%.
                         """)
                         
-                        pj_bazin = bazin_formula(dpa)
-                        if pj_bazin:
-                            margem = (pj_bazin - basic['preco_atual']) / pj_bazin * 100
+                        # Verifica se DY está anormalmente alto (dividendo extraordinário)
+                        dy_atual = fund['dividend_yield'] or 0
+                        dy_extraordinario = dy_atual > 0.15  # DY > 15% é suspeito
+                        
+                        if dy_extraordinario and dy_atual > 0:
+                            st.warning(f"""
+                            ⚠️ **DY de {dy_atual*100:.1f}% parece extraordinário!**
                             
-                            st.metric(
-                                "Preço Justo (Bazin)",
-                                f"R$ {pj_bazin:.2f}",
-                                f"{margem:.1f}% {'desconto' if margem > 0 else 'prêmio'}"
-                            )
+                            Provavelmente inclui dividendos especiais (JCP extra, distribuição de reservas).
+                            Bazin assume dividendos **recorrentes e sustentáveis**.
+                            """)
                             
-                            if margem >= 30:
-                                st.success("🟢 MUITO BARATO para dividendos")
-                            elif margem >= 15:
-                                st.success("🟢 BARATO para dividendos")
-                            elif margem >= -10:
-                                st.info("🟡 PREÇO JUSTO para dividendos")
-                            else:
-                                st.warning("🔴 DY abaixo de 6% no preço atual")
+                            # Calcula com DY real (distorcido)
+                            pj_bazin_real = bazin_formula(dpa)
+                            
+                            # Sugere DY normalizado baseado no setor
+                            dy_normalizado = benchmark.get('dy_medio', 0.06)
+                            dpa_normalizado = dy_normalizado * basic['preco_atual']
+                            pj_bazin_normalizado = bazin_formula(dpa_normalizado)
+                            
+                            st.markdown(f"**Usando DY normalizado do setor ({dy_normalizado*100:.0f}%):**")
+                            
+                            if pj_bazin_normalizado:
+                                margem = (pj_bazin_normalizado - basic['preco_atual']) / pj_bazin_normalizado * 100
+                                
+                                st.metric(
+                                    "Preço Justo (Bazin Normalizado)",
+                                    f"R$ {pj_bazin_normalizado:.2f}",
+                                    f"{margem:.1f}% {'desconto' if margem > 0 else 'prêmio'}"
+                                )
+                                
+                                if margem >= 30:
+                                    st.success("🟢 MUITO BARATO para dividendos (normalizado)")
+                                elif margem >= 15:
+                                    st.success("🟢 BARATO para dividendos (normalizado)")
+                                elif margem >= -10:
+                                    st.info("🟡 PREÇO JUSTO para dividendos (normalizado)")
+                                else:
+                                    st.warning("🔴 DY abaixo de 6% no preço atual (normalizado)")
+                            
+                            # Mostra o valor distorcido para referência
+                            with st.expander("Ver cálculo com DY atual (distorcido)"):
+                                st.caption(f"DPA atual: R$ {dpa:.2f} | Preço Justo: R$ {pj_bazin_real:.2f}")
+                                st.caption("Este valor está inflado por dividendos não-recorrentes.")
+                        
                         else:
-                            st.warning("Empresa não paga dividendos ou dados indisponíveis")
+                            # DY normal - usa cálculo padrão
+                            pj_bazin = bazin_formula(dpa)
+                            if pj_bazin:
+                                margem = (pj_bazin - basic['preco_atual']) / pj_bazin * 100
+                                
+                                st.metric(
+                                    "Preço Justo (Bazin)",
+                                    f"R$ {pj_bazin:.2f}",
+                                    f"{margem:.1f}% {'desconto' if margem > 0 else 'prêmio'}"
+                                )
+                                
+                                if margem >= 30:
+                                    st.success("🟢 MUITO BARATO para dividendos")
+                                elif margem >= 15:
+                                    st.success("🟢 BARATO para dividendos")
+                                elif margem >= -10:
+                                    st.info("🟡 PREÇO JUSTO para dividendos")
+                                else:
+                                    st.warning("🔴 DY abaixo de 6% no preço atual")
+                            else:
+                                st.warning("Empresa não paga dividendos ou dados indisponíveis")
                     
                     # Resumo
                     st.markdown("---")
