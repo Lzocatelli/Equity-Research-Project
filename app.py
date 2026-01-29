@@ -18,8 +18,10 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data.fetcher import StockFetcher
+from data.macro import MacroData, get_sector_benchmark
 from analysis.indicators import StockAnalyzer
 from analysis.screener import StockScreener
+from analysis.valuation import analisar_valuation, graham_formula_original, bazin_formula
 
 # ============================================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -100,6 +102,16 @@ def fetch_multiple_stocks_data(tickers: list, period: str = "1y"):
             else:
                 st.warning(f"Erro ao buscar {ticker}: {e}")
     return data
+
+
+@st.cache_data(ttl=3600)  # Cache de 1 hora para dados macro
+def fetch_macro_data():
+    """Busca indicadores macroeconômicos do BCB"""
+    try:
+        macro = MacroData()
+        return macro.get_all_indicators()
+    except Exception as e:
+        return {'selic': 10.75, 'ipca_12m': 4.5, 'cdi': 10.65, 'cambio': 5.0, 'erro': str(e)}
 
 
 def format_number(value, prefix="", suffix="", decimals=2):
@@ -420,8 +432,14 @@ elif page == "📊 Análise Individual":
                 
                 st.markdown("---")
                 
+                # Busca dados macro para contexto
+                macro_data = fetch_macro_data()
+                
                 # Tabs
-                tab1, tab2, tab3, tab4 = st.tabs(["📈 Gráficos", "📋 Fundamentos", "📊 Performance", "💡 Interpretação"])
+                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+                    "📈 Gráficos", "📋 Fundamentos", "📊 Performance", 
+                    "💰 Valuation", "🌍 Contexto Macro", "💡 Interpretação"
+                ])
                 
                 with tab1:
                     # Seletor de médias móveis
@@ -545,20 +563,207 @@ elif page == "📊 Análise Individual":
                     st.plotly_chart(fig_hist, use_container_width=True)
                 
                 with tab4:
+                    st.markdown("### 💰 Valuation - Preço Justo")
+                    
+                    # Calcula DPA (Dividendo por Ação) se tiver DY e preço
+                    dpa = 0
+                    if fund['dividend_yield'] and basic['preco_atual']:
+                        dpa = fund['dividend_yield'] * basic['preco_atual']
+                    
+                    selic = macro_data.get('selic', 10.75) or 10.75
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("#### Fórmula de Graham")
+                        st.markdown("""
+                        **√(22.5 × LPA × VPA)**
+                        
+                        Benjamin Graham, mentor de Warren Buffett, criou esta fórmula 
+                        para encontrar ações com margem de segurança.
+                        """)
+                        
+                        pj_graham = graham_formula_original(fund['lpa'], fund['vpa'])
+                        if pj_graham:
+                            margem = (pj_graham - basic['preco_atual']) / pj_graham * 100
+                            
+                            st.metric(
+                                "Preço Justo (Graham)",
+                                f"R$ {pj_graham:.2f}",
+                                f"{margem:.1f}% {'desconto' if margem > 0 else 'prêmio'}"
+                            )
+                            
+                            if margem >= 30:
+                                st.success("🟢 MUITO BARATO - Margem de segurança alta")
+                            elif margem >= 15:
+                                st.success("🟢 BARATO - Boa margem de segurança")
+                            elif margem >= -10:
+                                st.info("🟡 PREÇO JUSTO")
+                            else:
+                                st.warning("🔴 CARO - Acima do preço justo")
+                        else:
+                            st.warning("Dados insuficientes (LPA ou VPA negativo/indisponível)")
+                    
+                    with col2:
+                        st.markdown("#### Fórmula de Bazin")
+                        st.markdown("""
+                        **DPA / 6%**
+                        
+                        Décio Bazin, investidor brasileiro, defendia que 
+                        uma ação só vale a pena com DY mínimo de 6%.
+                        """)
+                        
+                        pj_bazin = bazin_formula(dpa)
+                        if pj_bazin:
+                            margem = (pj_bazin - basic['preco_atual']) / pj_bazin * 100
+                            
+                            st.metric(
+                                "Preço Justo (Bazin)",
+                                f"R$ {pj_bazin:.2f}",
+                                f"{margem:.1f}% {'desconto' if margem > 0 else 'prêmio'}"
+                            )
+                            
+                            if margem >= 30:
+                                st.success("🟢 MUITO BARATO para dividendos")
+                            elif margem >= 15:
+                                st.success("🟢 BARATO para dividendos")
+                            elif margem >= -10:
+                                st.info("🟡 PREÇO JUSTO para dividendos")
+                            else:
+                                st.warning("🔴 DY abaixo de 6% no preço atual")
+                        else:
+                            st.warning("Empresa não paga dividendos ou dados indisponíveis")
+                    
+                    # Resumo
+                    st.markdown("---")
+                    st.markdown("#### 📊 Dados utilizados no cálculo")
+                    calc_data = {
+                        "Variável": ["LPA", "VPA", "DPA (estimado)", "Preço Atual", "SELIC"],
+                        "Valor": [
+                            f"R$ {fund['lpa']:.2f}" if fund['lpa'] else "N/A",
+                            f"R$ {fund['vpa']:.2f}" if fund['vpa'] else "N/A",
+                            f"R$ {dpa:.2f}" if dpa else "N/A",
+                            f"R$ {basic['preco_atual']:.2f}",
+                            f"{selic:.2f}%"
+                        ]
+                    }
+                    st.table(pd.DataFrame(calc_data))
+                    
+                    st.caption("⚠️ Estes modelos são simplificados. Use como referência, não como recomendação de investimento.")
+                
+                with tab5:
+                    st.markdown("### 🌍 Contexto Macroeconômico")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    selic = macro_data.get('selic')
+                    ipca = macro_data.get('ipca_12m')
+                    cdi = macro_data.get('cdi')
+                    cambio = macro_data.get('cambio')
+                    
+                    col1.metric("SELIC", f"{selic:.2f}%" if selic else "N/A")
+                    col2.metric("IPCA 12m", f"{ipca:.2f}%" if ipca else "N/A")
+                    col3.metric("CDI", f"{cdi:.2f}%" if cdi else "N/A")
+                    col4.metric("Dólar", f"R$ {cambio:.2f}" if cambio else "N/A")
+                    
+                    st.markdown("---")
+                    
+                    st.markdown("#### 📈 Impacto no Investimento")
+                    
+                    # Juro real
+                    if selic and ipca:
+                        juro_real = ((1 + selic/100) / (1 + ipca/100) - 1) * 100
+                        st.metric("Juro Real", f"{juro_real:.2f}%", 
+                                  "Retorno acima da inflação" if juro_real > 0 else "Retorno abaixo da inflação")
+                    
+                    # Análise do Sharpe considerando CDI
+                    st.markdown("---")
+                    st.markdown("#### 🎯 Sharpe Ratio em Contexto")
+                    
+                    if cdi:
+                        st.markdown(f"""
+                        O **Sharpe Ratio** de **{stats['sharpe_ratio']:.2f}** considera a SELIC de **{selic:.2f}%** como taxa livre de risco.
+                        
+                        **Interpretação:**
+                        """)
+                        
+                        retorno_anual = stats['retorno_anualizado'] * 100
+                        
+                        if retorno_anual > selic:
+                            st.success(f"""
+                            ✅ **Retorno ({retorno_anual:.1f}%) > SELIC ({selic:.1f}%)**
+                            
+                            A ação superou a renda fixa no período. O prêmio de risco foi recompensado.
+                            """)
+                        else:
+                            st.warning(f"""
+                            ⚠️ **Retorno ({retorno_anual:.1f}%) < SELIC ({selic:.1f}%)**
+                            
+                            A renda fixa teria sido melhor no período. Considere se o risco valeu a pena.
+                            """)
+                    
+                    # Setor e sensibilidade a juros
+                    st.markdown("---")
+                    st.markdown("#### 🏦 Sensibilidade Setorial")
+                    
+                    setor = basic['setor']
+                    
+                    sensibilidade_juros = {
+                        'Financial Services': ('Alta', 'Bancos se beneficiam de juros altos (spread)'),
+                        'Banks': ('Alta', 'Spread bancário aumenta com SELIC alta'),
+                        'Real Estate': ('Alta negativa', 'Juros altos encarecem financiamentos'),
+                        'Utilities': ('Média', 'Receitas previsíveis, mas dívida sensível a juros'),
+                        'Consumer Cyclical': ('Alta negativa', 'Consumo cai com crédito caro'),
+                        'Technology': ('Média negativa', 'Valuations comprimem com juros altos'),
+                        'Consumer Defensive': ('Baixa', 'Demanda inelástica'),
+                        'Energy': ('Baixa', 'Commodities seguem ciclo próprio'),
+                        'Basic Materials': ('Baixa', 'Mais ligado a ciclo global'),
+                    }
+                    
+                    if setor in sensibilidade_juros:
+                        sens, explicacao = sensibilidade_juros[setor]
+                        st.info(f"**{setor}** — Sensibilidade a juros: **{sens}**\n\n{explicacao}")
+                    else:
+                        st.info(f"Setor: {setor}")
+                
+                with tab6:
                     st.markdown("### 💡 Interpretação Automática")
+                    
+                    # Busca benchmark do setor
+                    setor = basic['setor']
+                    benchmark = get_sector_benchmark(setor)
+                    
+                    st.markdown(f"**Setor:** {setor}")
+                    st.markdown(f"**Referência setorial:** P/L médio ~{benchmark['pl_medio']}, P/VP médio ~{benchmark['pvp_medio']}, DY médio ~{benchmark['dy_medio']*100:.1f}%")
+                    
+                    st.markdown("---")
                     
                     interpretations = []
                     
-                    # P/L
+                    # P/L comparado com setor
                     if fund['pl'] and fund['pl'] > 0:
-                        if fund['pl'] < 10:
-                            interpretations.append(("✅", "P/L baixo (<10)", "Ação pode estar barata em relação aos lucros"))
-                        elif fund['pl'] > 25:
-                            interpretations.append(("⚠️", "P/L alto (>25)", "Ação pode estar cara ou mercado espera crescimento"))
+                        pl_vs_setor = fund['pl'] / benchmark['pl_medio']
+                        if pl_vs_setor < 0.7:
+                            interpretations.append(("✅", "P/L abaixo do setor", 
+                                f"P/L de {fund['pl']:.1f} está {(1-pl_vs_setor)*100:.0f}% abaixo da média do setor ({benchmark['pl_medio']})"))
+                        elif pl_vs_setor > 1.5:
+                            interpretations.append(("⚠️", "P/L acima do setor", 
+                                f"P/L de {fund['pl']:.1f} está {(pl_vs_setor-1)*100:.0f}% acima da média do setor ({benchmark['pl_medio']})"))
                         else:
-                            interpretations.append(("➖", "P/L em faixa neutra", "Valuation dentro da média do mercado"))
+                            interpretations.append(("➖", "P/L alinhado ao setor", 
+                                f"P/L de {fund['pl']:.1f} próximo à média do setor ({benchmark['pl_medio']})"))
                     elif fund['pl'] and fund['pl'] < 0:
                         interpretations.append(("🔴", "P/L negativo", "Empresa com prejuízo no período"))
+                    
+                    # P/VP comparado com setor
+                    if fund['pvp'] and fund['pvp'] > 0:
+                        pvp_vs_setor = fund['pvp'] / benchmark['pvp_medio']
+                        if pvp_vs_setor < 0.7:
+                            interpretations.append(("✅", "P/VP abaixo do setor", 
+                                f"P/VP de {fund['pvp']:.2f} sugere desconto patrimonial"))
+                        elif pvp_vs_setor > 1.5:
+                            interpretations.append(("⚠️", "P/VP acima do setor", 
+                                f"P/VP de {fund['pvp']:.2f} pode indicar sobrevalorização"))
                     
                     # ROE
                     if fund['roe']:
@@ -569,18 +774,23 @@ elif page == "📊 Análise Individual":
                         elif fund['roe'] < 0.08:
                             interpretations.append(("⚠️", "ROE baixo (<8%)", "Baixa rentabilidade"))
                     
-                    # DY
+                    # DY comparado com setor
                     if fund['dividend_yield']:
+                        dy_vs_setor = fund['dividend_yield'] / benchmark['dy_medio'] if benchmark['dy_medio'] > 0 else 1
+                        if dy_vs_setor > 1.5:
+                            interpretations.append(("✅", "DY acima do setor", 
+                                f"Dividend Yield de {fund['dividend_yield']*100:.2f}% acima da média setorial"))
                         if fund['dividend_yield'] > 0.08:
                             interpretations.append(("✅", "DY muito alto (>8%)", "Excelente pagadora de dividendos"))
-                        elif fund['dividend_yield'] > 0.05:
-                            interpretations.append(("✅", "DY bom (>5%)", "Boa pagadora de dividendos"))
                     
-                    # Performance
-                    if stats['retorno_total'] > 0.30:
-                        interpretations.append(("✅", "Retorno forte (>30%)", f"Excelente performance no período"))
+                    # Performance vs CDI
+                    selic = macro_data.get('selic', 10.75) or 10.75
+                    if stats['retorno_anualizado'] > selic/100:
+                        interpretations.append(("✅", "Bateu o CDI", 
+                            f"Retorno de {stats['retorno_anualizado']*100:.1f}% superou a SELIC ({selic:.1f}%)"))
                     elif stats['retorno_total'] < -0.20:
-                        interpretations.append(("⚠️", "Queda significativa", f"Ação caiu mais de 20% no período"))
+                        interpretations.append(("⚠️", "Queda significativa", 
+                            f"Ação caiu {abs(stats['retorno_total'])*100:.1f}% no período"))
                     
                     # Sharpe
                     if stats['sharpe_ratio'] > 1.5:
@@ -593,6 +803,8 @@ elif page == "📊 Análise Individual":
                     # Volatilidade
                     if stats['volatilidade_anual'] > 0.50:
                         interpretations.append(("⚠️", "Alta volatilidade (>50%)", "Ação com alto risco"))
+                    elif stats['volatilidade_anual'] < 0.25:
+                        interpretations.append(("✅", "Baixa volatilidade (<25%)", "Ação defensiva"))
                     
                     for emoji, title, desc in interpretations:
                         st.markdown(f"{emoji} **{title}** — {desc}")
